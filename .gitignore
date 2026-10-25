@@ -1,0 +1,5 @@
+# 環境変数（秘密情報を含む）
+.env
+
+# LB の向き先（scripts/deploy.sh が書き換える）
+docker/lb/active.conf
