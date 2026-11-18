@@ -3,3 +3,6 @@
 
 # LB の向き先（scripts/deploy.sh が書き換える）
 docker/lb/active.conf
+
+# アクセスログ（seiran が書き出す）
+/logs/

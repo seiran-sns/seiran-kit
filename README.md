@@ -54,12 +54,33 @@ scripts/deploy.sh
 版を戻すときも、`SEIRAN_VERSION` を前の版にして同じように実行します。ただしマイグレーションは
 前にしか進まないので、戻した版が新しいスキーマで動ける範囲に限ります。
 
+この構成は seiran **0.3.0 以降**のイメージ用です。0.3.0 でイメージから nginx を外し、seiran 本体が
+フロントエンドも配るようになりました（LB の転送先が `:80` から `:3000` に変わっています）。0.2 系から
+上げるときは、先に `git pull` してから `SEIRAN_VERSION` を 0.3.0 以降にして `scripts/deploy.sh` を実行
+してください。切り替えの間も、動いている 0.2 系の色はそのまま応答を続けます。
+
+1.0.0 以降は、同じメジャー版の中ならどの版からでも直接更新できます。メジャー版をまたぐときは、
+各メジャー版の最終版（そのメジャー版のタグ、例: `1`）を順に経由してください。
+
 ## バックアップと復元
 
 - バックアップ: `cron` が毎時48分に `scripts/backup-db.sh` を実行し、`${BACKUP_OBJECT_S3URL}_latest`
   を上書きします。手動で `scripts/backup-db.sh <SUFFIX>` を実行すると `_<SUFFIX>` にも残します。
 - 復元: `scripts/restore-db.sh [SUFFIX]`（既定 `latest`）。稼働中の `db` の既存データを消して
   置き換えるので、実行前に `seiran-blue` / `seiran-green` を止めてください。
+
+## アクセスログ
+
+seiran 本体が `./logs` に `access.log.YYYY-MM-DD` で日ごとに書き出し、14日分残します。形式は nginx の
+combined に処理時間（秒）を足したものなので、nginx 向けの解析ツール（GoAccess 等）でそのまま読めます。
+
+```bash
+tail -f logs/access.log.$(date -u +%F)
+```
+
+接続元は、Cloudflare Tunnel と LB を経由していても実際のクライアントの IP になります。クエリ文字列は
+トークンを含むことがあるので記録しません。`docker compose logs` で見えるのは seiran の動作ログで、
+アクセスログは含みません。
 
 ## 運用メモ
 
