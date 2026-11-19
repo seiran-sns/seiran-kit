@@ -4,5 +4,9 @@
 # LB の向き先（scripts/deploy.sh が書き換える）
 docker/lb/active.conf
 
+# 切り替えの排他ロック・自動更新で起動しなかった版の記録（scripts/switch.sh・auto-update.py）
+/.switch.lock
+/.auto-update-failed
+
 # アクセスログ（seiran が書き出す）
 /logs/

@@ -6,9 +6,8 @@
 # ジョブキュー・リアルタイム配信を Redis で共有し、常駐処理は片方だけが動く
 # （https://github.com/seiran-sns/seiran の docs/architecture.md 3.1節）。
 #
-# 初回・更新とも:
-#   1. .env の SEIRAN_VERSION に動かす版を書く
-#   2. scripts/deploy.sh
+# 初回・更新とも scripts/deploy.sh [タグ]（省くと latest）。新しい版への更新は cron
+# コンテナが scripts/auto-update.py で自動で行う。
 #
 # seiran-blue / seiran-green はプロファイルに入れてあり、`docker compose up -d` だけでは
 # 起動しない（両方が動きっぱなしにならないように）。色の起動・停止は deploy.sh が行う。
@@ -16,7 +15,6 @@
 name: seiran-prod
 
 x-seiran: &seiran
-  image: ${SEIRAN_IMAGE:-seiranorg/seiran}:${SEIRAN_VERSION:?.env に SEIRAN_VERSION を書いてください}
   restart: always
   env_file: .env
   environment:
@@ -103,15 +101,24 @@ services:
       - internal
       - external
 
+  # 色ごとのイメージは、switch.sh が公開イメージ（seiranorg/seiran:<版>）に付け直す
+  # ローカルのタグ。どの版で動かすかを compose ファイルや .env に持たないので、手で
+  # `docker compose --profile blue up -d` しても、その色はいまの版のまま作り直される。
   seiran-blue:
     <<: *seiran
+    image: seiran-local:blue
+    pull_policy: never
     profiles: ["blue"]
 
   seiran-green:
     <<: *seiran
+    image: seiran-local:green
+    pull_policy: never
     profiles: ["green"]
 
-  # ─── DBバックアップ（毎時 R2 へ。scripts/backup-db.sh）──────────────────────
+  # ─── DBバックアップ（毎時 R2 へ。scripts/backup-db.sh）と自動更新（scripts/auto-update.py）
+  # 自動更新は docker.sock 越しに本体の色を切り替え、docker/lb/active.conf を書き換えるので、
+  # kit は書き込めるようにマウントする。
   cron:
     build:
       context: docker/cron
@@ -122,10 +129,13 @@ services:
       COMPOSE_PROJECT_NAME: seiran-prod
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/seiran:ro
+      - ./:/seiran
     depends_on:
       db:
         condition: service_healthy
+    # 自動更新の通知を LB（http://lb）へ直接投稿するため。
+    networks:
+      - internal
 
   # ─── Cloudflare Tunnel（公開ホスト名の向き先は http://lb:80）────────────────
   tunnel:

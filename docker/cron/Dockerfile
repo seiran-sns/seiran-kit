@@ -3,7 +3,7 @@ FROM public.ecr.aws/docker/library/docker:latest AS docker
 FROM public.ecr.aws/ubuntu/ubuntu:latest
 
 RUN apt update \
-    && apt install -y busybox entr ca-certificates \
+    && apt install -y busybox entr ca-certificates python3 \
     && mkdir -p /var/spool/cron/crontabs
 
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker

@@ -3,3 +3,7 @@ LANG=ja_JP.UTF-8
 # Hourly db backup
 # 同一ホストで動く他システムのバックアップ（毎時18分）と、CPU負荷・ディスクIOが重ならないよう時刻をずらしている。
 48 * * * * /seiran/scripts/backup-db.sh
+
+# 新しい版への自動更新（scripts/auto-update.py）。出力は `docker compose logs cron` で見えるようにする。
+# 切り替え中に次の回が来ても、switch.sh のロックで重ならない（その回は何もせず次回に回す）。
+*/3 * * * * /seiran/scripts/auto-update.py >/proc/1/fd/2 2>&1

@@ -14,10 +14,10 @@
 | `redis` | ジョブキュー・リアルタイム配信を新旧のプロセスで共有する（追記ログで永続化） |
 | `lb` | 動いている方の色（blue / green）にだけリクエストを流す nginx |
 | `seiran-blue` / `seiran-green` | seiran 本体（`SEIRAN_ROLE=all`）。片方ずつ動かす |
-| `cron` | 毎時 DB を R2 へバックアップする（`scripts/backup-db.sh`） |
+| `cron` | 毎時 DB を R2 へバックアップする（`scripts/backup-db.sh`）。新しい版への自動更新（`scripts/auto-update.py`） |
 | `tunnel` | Cloudflare Tunnel。公開ホスト名の向き先は `http://lb:80` |
 
-更新は blue-green で無停止に行います（`scripts/deploy.sh`）。動いていない方の色を新しい版で起動し、
+更新は blue-green で無停止に行います（`scripts/switch.sh`）。動いていない方の色を新しい版で起動し、
 `/health` が通ったら LB の向き先を切り替えて古い方を止めます。新しい方が起動しなければそこで止まり、
 動いている方には触れません。
 
@@ -34,7 +34,7 @@ git clone https://github.com/seiran-sns/seiran-kit.git
 cd seiran-kit
 cp .env.example .env
 # .env を編集する（LOCAL_DOMAIN・POSTGRES_PASSWORD・TUNNEL_TOKEN・バックアップ先など）
-scripts/deploy.sh
+scripts/deploy.sh              # 最新版（latest）で起動する。版を指定するなら scripts/deploy.sh 0.3.2
 ```
 
 起動したら `https://<LOCAL_DOMAIN>/` を開き、案内に従って管理者アカウントを作成します。
@@ -45,22 +45,37 @@ DB とは別に保管してください（DB のバックアップには含ま�
 
 ## 版の更新
 
+新しい版は `cron` コンテナが自動で入れます。3分ごとに GHCR（`ghcr.io/seiran-sns/seiran`）のタグを見て、
+新しい版があれば `scripts/switch.sh` で無停止に切り替えます。どの版へ上げるかは次のとおりです。
+
+- 1.0.0 以降: 同じメジャー版の中なら、その最新版へ直接上げます。いまのメジャー版の最終版にいれば、
+  次のメジャー版の最新版へ上げます（メジャー版をまたぐときは各メジャー版の最終版を経由します）。
+- 0.x: 公開されている版を1つずつ順に上げます（0.x はマイグレーションの互換が「1つ前の版」までのため）。
+- 版を下げることはありません。
+
+新しい版が起動しなかったときは、動いている版のまま止まり、その版を `.auto-update-failed` に記録して
+以後は上げません。原因を直したら、ファイルを消すか手で上げてください。経過は `docker compose logs cron`
+で見られます。
+
+`.env` に `UPDATE_NOTICE_TOKEN`（投稿させたいアカウントの「設定 → アプリトークン」で発行）を書くと、
+自動更新が済むたびにそのアカウントで通知を投稿します。文面は `UPDATE_NOTICE_TEXT` で変えられます
+（`.env.example` 参照）。手で `deploy.sh` を実行したときは投稿しません。
+
+手で上げる・戻すときは、タグを指定して `scripts/deploy.sh` を実行します。動かす版は `.env` には
+書きません（`deploy.sh` は pull したイメージのラベルから実際の版を読み、`0.3.2` のような確定した版の
+イメージで動かします）。
+
 ```bash
-git pull                       # compose ファイル等の更新を取り込む
-# .env の SEIRAN_VERSION を新しい版に書き換える
-scripts/deploy.sh
+git pull                       # compose ファイル等の更新を取り込む（自動では取り込みません）
+scripts/deploy.sh              # latest へ
+scripts/deploy.sh 0.3.1        # 版を指定して（戻すときも同じ）
 ```
 
-版を戻すときも、`SEIRAN_VERSION` を前の版にして同じように実行します。ただしマイグレーションは
-前にしか進まないので、戻した版が新しいスキーマで動ける範囲に限ります。
+版を戻すときは、マイグレーションが前にしか進まないので、戻した版が新しいスキーマで動ける範囲に
+限ります。戻した後も自動更新は新しい版へ上げ直すので、止めたいときは `.auto-update-failed` に
+上げたくない版を書いておいてください。
 
-この構成は seiran **0.3.0 以降**のイメージ用です。0.3.0 でイメージから nginx を外し、seiran 本体が
-フロントエンドも配るようになりました（LB の転送先が `:80` から `:3000` に変わっています）。0.2 系から
-上げるときは、先に `git pull` してから `SEIRAN_VERSION` を 0.3.0 以降にして `scripts/deploy.sh` を実行
-してください。切り替えの間も、動いている 0.2 系の色はそのまま応答を続けます。
-
-1.0.0 以降は、同じメジャー版の中ならどの版からでも直接更新できます。メジャー版をまたぐときは、
-各メジャー版の最終版（そのメジャー版のタグ、例: `1`）を順に経由してください。
+この構成は seiran **0.3.0 以降**のイメージ用です。
 
 ## バックアップと復元
 
@@ -86,7 +101,7 @@ tail -f logs/access.log.$(date -u +%F)
 
 - `db` はループバック（`127.0.0.1:${DB_PUBLISH_PORT:-5432}`）にだけ公開します。psql は SSH トンネル経由で
   繋いでください。
-- `docker/lb/active.conf` は `deploy.sh` が書く、いま動いている色の記録です。消すと次の `deploy.sh` が
+- `docker/lb/active.conf` は `switch.sh` が書く、いま動いている色の記録です。消すと次の `deploy.sh` が
   動いている色を見失い、それを作り直して止めたり、止めずに残したりするので、消さないでください。
 - compose のプロジェクト名は `seiran-prod` です。ボリューム名（`seiran-prod_db-data` 等）がこれに
   紐づくので変えないでください。
