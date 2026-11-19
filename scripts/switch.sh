@@ -69,8 +69,12 @@ done
 log "seiran-${next} が healthy になりました。LB の向き先を切り替えます。"
 
 # 同じディレクトリに書いてから置き換える（書きかけのファイルを nginx に読ませない）。
+# 置き換え先・書きかけのファイルは、cron コンテナ（root）が作った読み取り専用のものでありうる。
+# 置き換えはディレクトリの権限でできるので、rm -f / mv -f で確認を出さずに進める
+# （mv は書き込み権の無いファイルを置き換えるとき、端末から実行していると確認を求める）。
+rm -f "$active_conf.tmp"
 printf 'set $seiran_backend seiran-%s:3000;\n' "$next" > "$active_conf.tmp"
-mv "$active_conf.tmp" "$active_conf"
+mv -f "$active_conf.tmp" "$active_conf"
 if [ -n "$("${compose[@]}" ps -q --status running lb)" ]; then
     "${compose[@]}" exec -T lb nginx -t -q
     "${compose[@]}" exec -T lb nginx -s reload
