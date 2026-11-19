@@ -27,7 +27,12 @@ version="${1:-}"
 
 # 手動の deploy.sh と自動更新が重なって active.conf を取り合わないようにする。
 # cron コンテナからも bind mount 越しに同じファイルを見るので、ホストと排他できる。
-exec 9>"$kit_dir/.switch.lock"
+# ロックファイルはリポジトリに入れてあり（中身は空）、読み取りで開いて flock する。
+# 実行時に作ると、最初に動いたのが cron コンテナ（root）かホストかで所有者が変わり、
+# 書き込みで開くとホストの一般ユーザーが root のファイルを開けずに止まる。
+lock_file="$kit_dir/.switch.lock"
+[ -e "$lock_file" ] || { log "${lock_file} がありません（git checkout -- .switch.lock で戻してください）"; exit 1; }
+exec 9<"$lock_file"
 # 終了コード 75（EX_TEMPFAIL）は「起動に失敗した」と区別するため（auto-update.py が見る）。
 flock -n 9 || { log "別の切り替えが実行中です。終わってから実行してください。"; exit 75; }
 
