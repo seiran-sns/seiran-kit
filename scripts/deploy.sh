@@ -7,10 +7,9 @@
 # （自動更新がいま動いている版を知るのにも使う）。
 #
 # db・redis を起動してから、本体の切り替えを switch.sh に任せ、最後に lb・cron・tunnel を
-# 起動する（compose ファイルの変更もここで反映される）。cron は docker/cron の変更を取り込むよう
-# ビルドし直す（compose はイメージが既にあるとビルドし直さない）。`up --build cron` だと依存先の
-# db までビルドし直して作り直してしまうので、cron だけを build し、up は --no-deps で行う
-# （db・redis は上で起動済み）。
+# 起動する（compose ファイルの変更もここで反映される。db・redis は上で起動済みなので --no-deps）。
+# cron のイメージはビルドし直さない。docker/cron を変えたら
+# `docker compose build cron && docker compose up -d --no-deps cron` を手で実行する。
 #
 # Usage: scripts/deploy.sh [タグ]（例: scripts/deploy.sh / scripts/deploy.sh 0.3.2）
 set -euo pipefail
@@ -30,5 +29,4 @@ fi
 
 "${compose[@]}" up -d db redis
 "$kit_dir/scripts/switch.sh" "$version"
-"${compose[@]}" build cron
 "${compose[@]}" up -d --no-deps lb cron tunnel
