@@ -7,7 +7,12 @@ cron コンテナが定期的に実行する（docker/cron/crontab）。ホス�
 - 1.0.0 以降: 同じメジャー版に新しい版があれば、その最新版へ。いまのメジャー版の最終版に
   いれば、次のメジャー版の最新版へ（メジャー版をまたぐときは各メジャー版の最終版を経由する）。
 - 0.x: 互換が「1つ前の版」までなので、公開されている版を1つずつ順に上げる。
-- 下げない。latest・0・0.3 のような浮動タグと、接尾辞付きの版（フォーク・試験版）は見ない。
+- 下げない。latest・0・0.3 のような浮動タグと、接尾辞付きの版（1.0.0-RC1・フォーク等）へは
+  上げない。ただし手で接尾辞付きの版へ上げたあとは、それより新しい正式版へ上げる。
+
+版の順序: 数値部分が同じなら、接尾辞の無い版が最も新しい。接尾辞どうしは、末尾の数字を
+切り出した残りを大文字小文字を区別せずに昇順で比べ、残りが同じなら数字の無いものを最も古く、
+数字のあるものを数値の昇順にする（alpha < alpha9 < alpha10 < beta < beta1 < RC1 < 無印）。
 
 新しい版が起動しなかったら（switch.sh が失敗したら）その版を .auto-update-failed に記録し、
 以後その版へは上げない（毎回壊れた版を起動し直さないように）。原因を直して手で上げるか、
@@ -22,10 +27,11 @@ import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 GHCR_REPO = "seiran-sns/seiran"
 VERSION_LABEL = "org.opencontainers.image.version"
-SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$")
 # 1回の実行で上げる版の数の上限（0.x を1つずつ上げるときに、長く止まらないように）。
 MAX_STEPS = 10
 # switch.sh が「別の切り替えが実行中」で終わったときの終了コード。
@@ -95,13 +101,31 @@ def post_update_notice(previous, version) -> None:
         log(f"更新の通知を投稿できませんでした: {e}")
 
 
+class Version(NamedTuple):
+    """フィールドの順に比べると版の順序になる（v[0] がメジャー版）。"""
+    major: int
+    minor: int
+    patch: int
+    release: int  # 接尾辞が無ければ 1（同じ数値部分の接尾辞付きより新しい）
+    suffix_name: str  # 接尾辞の末尾の数字を除いた残り（小文字にそろえる）
+    suffix_num: int  # 接尾辞の末尾の数字。無ければ -1（数字のあるものより古い）
+    text: str
+
+
 def parse(tag: str):
     m = SEMVER.match(tag)
-    return tuple(int(x) for x in m.groups()) if m else None
+    if not m:
+        return None
+    major, minor, patch = (int(x) for x in m.group(1, 2, 3))
+    suffix = m.group(4)
+    if suffix is None:
+        return Version(major, minor, patch, 1, "", -1, tag)
+    name, num = re.fullmatch(r"(.*?)(\d*)", suffix).groups()
+    return Version(major, minor, patch, 0, name.casefold(), int(num) if num else -1, tag)
 
 
 def fmt(v) -> str:
-    return ".".join(str(x) for x in v)
+    return v.text
 
 
 def ghcr_versions() -> list:
@@ -117,7 +141,8 @@ def ghcr_versions() -> list:
             # 続きがあれば Link: </v2/...?last=...>; rel="next"
             m = re.search(r'<([^>]+)>;\s*rel="next"', r.headers.get("Link", ""))
             url = urllib.parse.urljoin(url, m.group(1)) if m else None
-    return sorted({v for v in map(parse, tags) if v})
+    # 接尾辞付きの版（試験版・フォーク）へは自動で上げない。
+    return sorted({v for v in map(parse, tags) if v and v.release})
 
 
 def compose(*args: str) -> list:
