@@ -30,8 +30,22 @@ x-seiran: &seiran
   volumes:
     - config-data:/app/config
     - ./logs:/var/log/seiran
+  # 動作ログはホストの journald へ送る。既定の json-file はコンテナごとのファイルなので、
+  # 切り替えで --force-recreate するたびに消えてしまう。journal ならコンテナを作り直しても
+  # 残り、blue と green の分も時系列に並ぶ。読むときは
+  #   journalctl -t seiran --since '2 days ago'（色は CONTAINER_NAME で分かる: -o verbose）
+  # 保存期間は docker/journald/seiran.conf（ホストの journald 設定、14日）で決める。
+  logging:
+    driver: journald
+    options:
+      tag: seiran
   # 停止の合図から、実行中のジョブ（最長60秒）と常駐処理の片付けを待つ
   stop_grace_period: 120s
+  # 経路途中で ICMP「分割が必要」が捨てられる宛先（PMTU ブラックホール）へ大きな
+  # パケットを送ると、TCP が送信サイズを下げられず署名付き POST（配送）が毎回
+  # タイムアウトする。ブラックホールを検知したら MSS を下げて送り直させる。
+  sysctls:
+    net.ipv4.tcp_mtu_probing: 1
   healthcheck:
     test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/health"]
     interval: 5s
