@@ -10,15 +10,18 @@ ingress の書き換えは運用者が行う。このスクリプトは読むだ
 ingress に揃っているかを判定する。auto-update.py は揃っていない版へは上げない。
 
 判定:
-- 許可リストの `[apex]` の各行は、ホスト名が LOCAL_DOMAIN、`[subdomains]` の各行は
-  `*.LOCAL_DOMAIN` のルールのパスとして、文字列がそのまま登録されていること。
+- 許可リストの `[apex]` は、ホスト名が LOCAL_DOMAIN、`[subdomains]` は `*.LOCAL_DOMAIN` の
+  ルールのパスとして登録されていること。登録の仕方は次のどちらでもよい:
+  - 節の全行を `|` で繋いだ1本（`--print` が出すもの）を1つのルールにする
+  - 各行を文字列のまま1つずつルールにする
 - そのホスト名にパスの無いルール（全部を通す）があれば、絞っていないので揃っているとみなす。
 - 転送先が http_status:* のルール（404 を返す等）は数えない。
 - ingress にあって許可リストに無い行は、古い版のためのものでありうるので問題にしない。
 
 手で確かめるとき（ingress を直した後など）:
 
-    scripts/tunnel_check.py 1.0.16     # その版のイメージを取得して照合する
+    scripts/tunnel_check.py 1.0.16           # その版のイメージを取得して照合する
+    scripts/tunnel_check.py --print 1.0.16   # ingress に登録するホスト名と正規表現を出す
 
 .env に CLOUDFLARE_API_TOKEN（権限は「アカウント → Cloudflare Tunnel → 読み取り」だけ）、
 TUNNEL_TOKEN、LOCAL_DOMAIN が要る。アカウントと Tunnel の ID は TUNNEL_TOKEN から読む。
@@ -115,6 +118,11 @@ def tunnel_ingress(api_token: str, tunnel_token: str) -> list:
     return config.get("ingress") or []
 
 
+def joined(lines: list) -> str:
+    """節の全行を1本の正規表現にする。各行が `^` で始まるので `|` で繋ぐだけでよい。"""
+    return "|".join(lines)
+
+
 def compare(required: dict, ingress: list, domain: str) -> Result:
     hosts = {"apex": domain, "subdomains": f"*.{domain}"}
     missing, extra, unrestricted = [], [], []
@@ -131,8 +139,10 @@ def compare(required: dict, ingress: list, domain: str) -> Result:
             unrestricted.append(host)
             continue
         paths = [r["path"] for r in rules]
-        missing += [(host, line) for line in lines if line not in paths]
-        extra += [(host, p) for p in paths if p not in lines]
+        one = joined(lines)
+        if one not in paths:
+            missing += [(host, line) for line in lines if line not in paths]
+        extra += [(host, p) for p in paths if p not in lines and p != one]
     return Result(missing, extra, unrestricted)
 
 
@@ -152,19 +162,42 @@ def format_rules(rules: list) -> str:
     return "\n".join(f"{host}  {path}" for host, path in rules)
 
 
+def print_rules(ref: str, domain: str) -> int:
+    try:
+        required = image_allowlist(ref)
+    except CheckError as e:
+        print(e, file=sys.stderr)
+        return 1
+    if required is None:
+        print(f"{ref} は許可リストを持たない版です。", file=sys.stderr)
+        return 1
+    hosts = {"apex": domain, "subdomains": f"*.{domain}"}
+    for section, lines in required.items():
+        print(f"# ホスト名: {hosts.get(section, f'[{section}]（この kit が知らない節）')}")
+        print(joined(lines))
+    return 0
+
+
 def main() -> int:
     # auto-update.py と同じく、kit の .env から値を読む（ファイル名に - があるので import 文は使えない）
     sys.dont_write_bytecode = True
     auto_update = importlib.import_module("auto-update")
 
-    if len(sys.argv) != 2:
-        print("Usage: scripts/tunnel_check.py <版>", file=sys.stderr)
+    args = sys.argv[1:]
+    show = args[:1] == ["--print"]
+    if show:
+        args = args[1:]
+    if len(args) != 1:
+        print("Usage: scripts/tunnel_check.py [--print] <版>", file=sys.stderr)
         return 2
+    version = args[0]
     image = auto_update.env_value("SEIRAN_IMAGE") or "seiranorg/seiran"
-    ref = f"{image}:{sys.argv[1]}"
+    ref = f"{image}:{version}"
     if subprocess.run(["docker", "pull", "-q", ref], stdout=subprocess.DEVNULL).returncode != 0:
         print(f"{ref} を取得できませんでした。", file=sys.stderr)
         return 1
+    if show:
+        return print_rules(ref, auto_update.env_value("LOCAL_DOMAIN") or "<LOCAL_DOMAIN>")
     try:
         result = check(ref, auto_update.env_value)
     except CheckError as e:
@@ -180,10 +213,10 @@ def main() -> int:
         print("この版の許可リストに無いルール（古い版のためのもの。この版へ上げたら消してよい）:")
         print("\n".join(f"  {h}  {p}" for h, p in result.extra))
     if result.missing:
-        print("足りないルール（ホスト名とパスをそのまま ingress に足してください）:")
+        print("足りない行（登録する正規表現は --print で出せます。今のルールのパスをそれに置き換える）:")
         print("\n".join(f"  {h}  {p}" for h, p in result.missing))
         return 1
-    print(f"ingress は {sys.argv[1]} が公開するパスを満たしています。")
+    print(f"ingress は {version} が公開するパスを満たしています。")
     return 0
 
 

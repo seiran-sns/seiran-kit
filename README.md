@@ -84,12 +84,12 @@ seiran のイメージは、外部に公開する URL パスの許可リスト�
 パスのルールとして登録すると、それ以外のパス（`/wp-login.php` や `/.env` を狙う脆弱性スキャン等）は
 Cloudflare で 404 になり、サーバーの回線にも seiran にも届きません。
 
-1. 許可リストを確かめる:
-   `docker run --rm --entrypoint cat seiranorg/seiran:<版> /usr/share/seiran/allowed-paths.txt`
-2. Zero Trust ダッシュボードの Tunnel の「公開ホスト名」に、`[apex]` の各行を `LOCAL_DOMAIN`、
-   `[subdomains]` の各行を `*.LOCAL_DOMAIN` のパスとして、1行ずつ文字列を変えずに登録する
-   （向き先は `http://lb:80`）。パスの無い `LOCAL_DOMAIN` のルールは消す。どれにも当たらないものは
-   最後の受け皿（`http_status:404`）に落ちる。
+1. 登録する正規表現を出す（節ごとに全行を `|` で繋いだ1本ずつ）:
+   `scripts/tunnel_check.py --print <版>`
+2. Zero Trust ダッシュボードの Tunnel の「公開ホスト名」に、出力の各ホスト名（`LOCAL_DOMAIN` と
+   `*.LOCAL_DOMAIN`）のパスとして、その1本を文字列を変えずに登録する（向き先は `http://lb:80`）。
+   許可リストの各行を1つずつルールにしてもよい。パスの無い `LOCAL_DOMAIN` のルールは消す。
+   どれにも当たらないものは最後の受け皿（`http_status:404`）に落ちる。
 
 新しい版で公開するパスが増えると、ingress に足すまでその URL は Cloudflare で 404 になります。
 これを防ぐため、`.env` に `CLOUDFLARE_API_TOKEN`（権限は Cloudflare Tunnel の読み取りだけ）を書くと、

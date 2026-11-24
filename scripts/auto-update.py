@@ -162,9 +162,10 @@ def tunnel_ready(image_ref: str, version) -> bool:
     alert_once(
         f"seiran {fmt(version)} への自動更新を見送りました。Cloudflare Tunnel の ingress に、"
         f"この版が公開するパスのルールが足りません。\n\n"
-        f"足りないルール（ホスト名とパス。文字列を変えずに足してください）:\n{rules}\n\n"
-        f"足せば次の自動更新（3分ごと）で上がります。"
-        f"確かめるときは scripts/tunnel_check.py {fmt(version)}")
+        f"足りない行（ホスト名とパス）:\n{rules}\n\n"
+        f"登録する正規表現は scripts/tunnel_check.py --print {fmt(version)} で出せます"
+        f"（ホスト名ごとの1本。今のルールのパスをこれに置き換える）。"
+        f"直せば次の自動更新（3分ごと）で上がります。")
     return False
 
 
