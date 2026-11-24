@@ -17,8 +17,14 @@ cron コンテナが定期的に実行する（docker/cron/crontab）。ホス�
 新しい版が起動しなかったら（switch.sh が失敗したら）その版を .auto-update-failed に記録し、
 以後その版へは上げない（毎回壊れた版を起動し直さないように）。原因を直して手で上げるか、
 ファイルを消せば再び試す。イメージの取得に失敗したときは記録せず、次回また試す。
+
+CLOUDFLARE_API_TOKEN があれば、上げる前にその版が公開するパスと Cloudflare Tunnel の
+ingress を照合する（scripts/tunnel_check.py）。ingress の書き換えは運用者の仕事なので、
+ルールが足りなければ上げずに UPDATE_ALERT_DM_TO へ DM で知らせ、次回また照合する
+（運用者が ingress を直せば、次の回で上がる）。同じ内容の DM は繰り返さない。
 """
 
+import hashlib
 import json
 import os
 import re
@@ -28,6 +34,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
+
+# cron コンテナは root で動くので、kit の中に root 所有の __pycache__ を残さない
+sys.dont_write_bytecode = True
+import tunnel_check  # noqa: E402
 
 GHCR_REPO = "seiran-sns/seiran"
 VERSION_LABEL = "org.opencontainers.image.version"
@@ -55,6 +65,8 @@ def kit_dir() -> Path:
 
 KIT = kit_dir()
 FAILED_FILE = KIT / ".auto-update-failed"
+# 最後に送った「ingress が合わない」DM の内容のハッシュ（同じ DM を3分ごとに送らないため）
+TUNNEL_ALERT_FILE = KIT / ".auto-update-tunnel-alerted"
 
 
 def env_value(name: str) -> str:
@@ -82,23 +94,78 @@ def post_update_notice(previous, version) -> None:
     失敗しても更新自体は済んでいるので、ログに残すだけにする。cron コンテナは internal
     ネットワークにいるので LB（http://lb）へ直接送る。ホストから実行したときは届かない。
     """
-    token = env_value("UPDATE_NOTICE_TOKEN")
-    if not token:
-        return
     template = env_value("UPDATE_NOTICE_TEXT") or "seiran {version} に更新しました。"
     text = template.replace("\\n", "\n").replace("{version}", fmt(version)).replace(
         "{previous}", fmt(previous))
+    post_status(text, "public", "更新の通知")
+
+
+def post_status(text: str, visibility: str, what: str) -> bool:
+    """UPDATE_NOTICE_TOKEN のアカウントで投稿する。トークンが無い・失敗したら False。
+
+    visibility が direct なら、宛先は本文中の @メンションで決まる。
+    """
+    token = env_value("UPDATE_NOTICE_TOKEN")
+    if not token:
+        return False
     req = urllib.request.Request(
-        "http://lb/api/notes/create",
-        data=json.dumps({"text": text}).encode(),
+        "http://lb/api/v1/statuses",
+        data=json.dumps({"status": text, "visibility": visibility}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            log(f"更新の通知を投稿しました（HTTP {r.status}）。")
+            log(f"{what}を投稿しました（HTTP {r.status}）。")
+            return True
     except Exception as e:
-        log(f"更新の通知を投稿できませんでした: {e}")
+        log(f"{what}を投稿できませんでした: {e}")
+        return False
+
+
+def alert_once(text: str) -> None:
+    """UPDATE_ALERT_DM_TO へ DM する。前回送ったものと同じ内容なら送らない。"""
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    if TUNNEL_ALERT_FILE.is_file() and TUNNEL_ALERT_FILE.read_text().strip() == digest:
+        return
+    to = env_value("UPDATE_ALERT_DM_TO").lstrip("@")
+    if not to:
+        log("UPDATE_ALERT_DM_TO が無いので DM は送りません。")
+        return
+    if post_status(f"@{to} {text}", "direct", "DM"):
+        TUNNEL_ALERT_FILE.write_text(digest + "\n")
+
+
+def tunnel_ready(image_ref: str, version) -> bool:
+    """その版が公開するパスが Tunnel の ingress に揃っていれば True（照合しない設定でも True）。"""
+    if not env_value("CLOUDFLARE_API_TOKEN"):
+        return True
+    try:
+        result = tunnel_check.check(image_ref, env_value)
+    except tunnel_check.CheckError as e:
+        log(f"Tunnel の ingress を照合できませんでした: {e}")
+        if e.config_error:
+            alert_once(f"seiran {fmt(version)} への自動更新を見送っています。"
+                       f"Cloudflare Tunnel の ingress を照合できません: {e}")
+        # 一時的な失敗（API・ネットワーク）は DM せず次回また試す
+        return False
+    if result is None:
+        log(f"版 {fmt(version)} は許可リストを持たないので、ingress は照合しません。")
+        return True
+    for host in result.unrestricted:
+        log(f"ingress の {host} はパスで絞っていません（全部のパスが seiran へ届きます）。")
+    if not result.missing:
+        TUNNEL_ALERT_FILE.unlink(missing_ok=True)
+        return True
+    rules = tunnel_check.format_rules(result.missing)
+    log(f"版 {fmt(version)} が公開するパスのルールが ingress に足りないので上げません:\n{rules}")
+    alert_once(
+        f"seiran {fmt(version)} への自動更新を見送りました。Cloudflare Tunnel の ingress に、"
+        f"この版が公開するパスのルールが足りません。\n\n"
+        f"足りないルール（ホスト名とパス。文字列を変えずに足してください）:\n{rules}\n\n"
+        f"足せば次の自動更新（3分ごと）で上がります。"
+        f"確かめるときは scripts/tunnel_check.py {fmt(version)}")
+    return False
 
 
 class Version(NamedTuple):
@@ -218,6 +285,8 @@ def update(cur, versions):
         if subprocess.run(["docker", "pull", "-q", f"{image}:{fmt(target)}"],
                           stdout=subprocess.DEVNULL).returncode != 0:
             log(f"{image}:{fmt(target)} を取得できませんでした。次回また試します。")
+            break
+        if not tunnel_ready(f"{image}:{fmt(target)}", target):
             break
         code = subprocess.run([str(KIT / "scripts/switch.sh"), fmt(target)]).returncode
         if code == EX_TEMPFAIL:

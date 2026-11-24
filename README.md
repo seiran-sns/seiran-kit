@@ -77,6 +77,30 @@ scripts/deploy.sh 0.3.1        # 版を指定して（戻すときも同じ）
 
 この構成は seiran **0.3.0 以降**のイメージ用です。
 
+## 公開するパスを Tunnel で絞る
+
+seiran のイメージは、外部に公開する URL パスの許可リスト（正規表現）を
+`/usr/share/seiran/allowed-paths.txt` に持っています。Cloudflare Tunnel の公開ホスト名に、この行だけを
+パスのルールとして登録すると、それ以外のパス（`/wp-login.php` や `/.env` を狙う脆弱性スキャン等）は
+Cloudflare で 404 になり、サーバーの回線にも seiran にも届きません。
+
+1. 許可リストを確かめる:
+   `docker run --rm --entrypoint cat seiranorg/seiran:<版> /usr/share/seiran/allowed-paths.txt`
+2. Zero Trust ダッシュボードの Tunnel の「公開ホスト名」に、`[apex]` の各行を `LOCAL_DOMAIN`、
+   `[subdomains]` の各行を `*.LOCAL_DOMAIN` のパスとして、1行ずつ文字列を変えずに登録する
+   （向き先は `http://lb:80`）。パスの無い `LOCAL_DOMAIN` のルールは消す。どれにも当たらないものは
+   最後の受け皿（`http_status:404`）に落ちる。
+
+新しい版で公開するパスが増えると、ingress に足すまでその URL は Cloudflare で 404 になります。
+これを防ぐため、`.env` に `CLOUDFLARE_API_TOKEN`（権限は Cloudflare Tunnel の読み取りだけ）を書くと、
+自動更新は上げる前にその版の許可リストと ingress を照合し、足りないルールがあれば上げずに
+`UPDATE_ALERT_DM_TO` 宛てに DM で知らせます（送り元は `UPDATE_NOTICE_TOKEN` のアカウント）。
+ingress を直せば次の回（3分ごと）で上がります。ingress を書き換えるのは人で、スクリプトは読むだけです。
+
+```bash
+scripts/tunnel_check.py 1.0.16   # その版に対して ingress が足りているか（足りないルール・不要になったルールを表示）
+```
+
 ## バックアップと復元
 
 - バックアップ: `cron` が毎時48分に `scripts/backup-db.sh` を実行し、`${BACKUP_OBJECT_S3URL}_latest`
